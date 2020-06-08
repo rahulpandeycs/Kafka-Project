@@ -1,7 +1,6 @@
 package com.course.kafka;
 
 import com.google.gson.JsonParser;
-import jdk.nashorn.internal.parser.JSONParser;
 import org.apache.http.HttpHost;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
@@ -13,8 +12,9 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.elasticsearch.action.bulk.BulkRequest;
+import org.elasticsearch.action.bulk.BulkResponse;
 import org.elasticsearch.action.index.IndexRequest;
-import org.elasticsearch.action.index.IndexResponse;
 import org.elasticsearch.client.RequestOptions;
 import org.elasticsearch.client.RestClient;
 import org.elasticsearch.client.RestClientBuilder;
@@ -31,8 +31,9 @@ import java.util.Properties;
 public class ElasticSearchConsumer {
 
     final static Logger logger = LoggerFactory.getLogger(ElasticSearchConsumer.class.getName());
+    private static final JsonParser jsonParser = new JsonParser();
 
-    public static KafkaConsumer<String, String> createConsumer(String topic){
+    public static KafkaConsumer<String, String> createConsumer(String topic) {
         String bootStrapServers = "127.0.0.1:9092";
         String groupId = "kafka-demo-elasticsearch";
 
@@ -55,13 +56,13 @@ public class ElasticSearchConsumer {
 
     }
 
-    public static RestHighLevelClient createClient(){
+    public static RestHighLevelClient createClient() {
         String hostname = "kafka-poc-course-4773186058.us-east-1.bonsaisearch.net";
         String username = "18ajuxk3sq";
         String password = "wat6b49cm9";
 
         final CredentialsProvider credentialsProvider = new BasicCredentialsProvider();
-        credentialsProvider.setCredentials(AuthScope.ANY, new UsernamePasswordCredentials(username,password));
+        credentialsProvider.setCredentials(AuthScope.ANY, new UsernamePasswordCredentials(username, password));
 
         RestClientBuilder builder = RestClient.builder(new HttpHost(hostname, 443, "https"))
                 .setHttpClientConfigCallback(new RestClientBuilder.HttpClientConfigCallback() {
@@ -80,47 +81,50 @@ public class ElasticSearchConsumer {
         KafkaConsumer<String, String> consumer = createConsumer("twitter_tweets");
 
         //poll for new data
-        while(true){
+        while (true) {
             ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(100));
 
-            for(ConsumerRecord<String, String> record: records){
-
-                String id = extractIdFromTheRecord(record.value());
-
-                IndexRequest indexRequest = new IndexRequest(
-                        "twitter",
-                        "tweets",
-                        id)
-                        .source(record.value(), XContentType.JSON);
-
-                IndexResponse response = client.index(indexRequest, RequestOptions.DEFAULT);
-
-                logger.info("The id is: " + response.getId());
+            Integer recordCounts = records.count();
+            logger.info("Received " + recordCounts + " records");
+            BulkRequest bulkRequest = new BulkRequest();
+            for (ConsumerRecord<String, String> record : records) {
 
                 try {
-                    Thread.sleep(10);
+                    String id = extractIdFromTheRecord(record.value());
+
+                    IndexRequest indexRequest = new IndexRequest(
+                            "twitter",
+                            "tweets",
+                            id)
+                            .source(record.value(), XContentType.JSON);
+
+                    bulkRequest.add(indexRequest);
+                }catch (NullPointerException exception){
+                    logger.warn("Skipping bad data" + record.value());
+                }
+//                IndexResponse response = client.index(indexRequest, RequestOptions.DEFAULT);
+//                logger.info("The id is: " + response.getId());
+            }
+
+            if (recordCounts > 0) {
+                BulkResponse bulkItemResponses = client.bulk(bulkRequest, RequestOptions.DEFAULT);
+                logger.info("Committing offsets...");
+                consumer.commitSync();
+                logger.info("Offsets have been committed");
+
+                try {
+                    Thread.sleep(1000);
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 }
             }
-
-            logger.info("Committing offsets...");
-            consumer.commitSync();
-            logger.info("Offsets have been committed");
-
-            try {
-                Thread.sleep(1000);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
         }
     }
-    private static JsonParser jsonParser = new JsonParser();
 
     private static String extractIdFromTheRecord(String value) {
-      return jsonParser.parse(value)
-                    .getAsJsonObject()
-                    .get("id_str")
-                    .getAsString();
+        return jsonParser.parse(value)
+                .getAsJsonObject()
+                .get("id_str")
+                .getAsString();
     }
 }
